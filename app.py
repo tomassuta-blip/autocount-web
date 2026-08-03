@@ -271,10 +271,14 @@ if curr_rol == "SuperAdmin":
     curr_tenant_nit = active_tenant_str.split(" - ")[0]
 else: curr_tenant_nit = curr_user['tenant_nit']
 
-# CORRECCIÓN 1: LIMPIEZA DE CACHÉ AL CAMBIAR DE EMPRESA
+# BLINDAJE TOTAL 1: PURGA COMPLETA AL CAMBIAR DE EMPRESA
 if st.session_state.get('last_tenant_active') != curr_tenant_nit:
     st.cache_data.clear()
     st.session_state['last_tenant_active'] = curr_tenant_nit
+    for key in list(st.session_state.keys()):
+        if key not in ['authenticated_user', 'last_tenant_active']:
+            del st.session_state[key]
+    st.rerun()
 
 curr_tenant = db_get_tenant(curr_tenant_nit)
 auto_clean_processed_docs(curr_tenant_nit)
@@ -303,15 +307,16 @@ st.markdown(f"""
 # ==========================================
 # 🔑 SIIGO API AUTHENTICATION & FUNCIONES
 # ==========================================
+# BLINDAJE TOTAL 2: CACHÉ AISLADA POR TENANT NIT
 @st.cache_data(ttl=3600)
-def obtener_token_siigo(user, key):
+def obtener_token_siigo(tenant_nit, user, key):
     try:
         res = requests.post("https://api.siigo.com/auth", json={"username": user, "access_key": key}, headers={"Content-Type": "application/json"}, timeout=10)
         return (res.json().get("access_token"), None) if res.status_code == 200 else (None, f"HTTP {res.status_code}: {res.text}")
     except Exception as e: return None, str(e)
 
 def get_siigo_headers():
-    token, err = obtener_token_siigo(curr_tenant['siigo_user'], curr_tenant['siigo_key'])
+    token, err = obtener_token_siigo(curr_tenant_nit, curr_tenant['siigo_user'], curr_tenant['siigo_key'])
     return ({"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Partner-Id": "SandboxSiigo"}, None) if token else (None, err)
 
 def crear_tercero_express_siigo(nit, nombre, apellidos="", es_empresa=True, id_type="31", email="", telefono="", direccion="", ciudad_dane="11001", resp_fiscal="R-99-PN", tipo_tercero_str="Supplier"):
@@ -370,8 +375,9 @@ def modal_formulario_tercero(nit_def, nombre_def, es_extranjero=False):
             if exito_c: st.success(msg_c); st.rerun()
             else: st.error(msg_c)
 
+# BLINDAJE TOTAL 3: CARGA DE MAESTROS AISLADA
 @st.cache_data(ttl=1800)
-def cargar_maestros_siigo(user, key):
+def cargar_maestros_siigo(tenant_nit, user, key):
     headers, err = get_siigo_headers()
     maestros = {"doc_types_fc": [], "doc_types_ds": [], "impuestos_iva": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_rete": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_ica": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_reteiva": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "pagos": [], "centros_costo": [], "terceros": {}, "terceros_lista": [], "productos": [], "error": err}
     if not headers: return maestros
@@ -611,9 +617,9 @@ def extraer_datos_pdf_soporte(pdf_bytes, filename):
 c1, c2, c3, c4 = st.columns([1.8, 2.2, 1.5, 1.5])
 with c1:
     if st.button("🔄 Sincronizar Maestros Siigo", use_container_width=True):
-        st.cache_data.clear(); maestros = cargar_maestros_siigo(curr_tenant['siigo_user'], curr_tenant['siigo_key'])
+        st.cache_data.clear(); maestros = cargar_maestros_siigo(curr_tenant_nit, curr_tenant['siigo_user'], curr_tenant['siigo_key'])
         st.success("¡Maestros actualizados!")
-    else: maestros = cargar_maestros_siigo(curr_tenant['siigo_user'], curr_tenant['siigo_key'])
+    else: maestros = cargar_maestros_siigo(curr_tenant_nit, curr_tenant['siigo_user'], curr_tenant['siigo_key'])
 
 with c2:
     if can_admin:
@@ -887,7 +893,6 @@ with tab2:
                         with i0: st.markdown(f"**{item_idx+1}**")
                         with i1: tipo_item = st.selectbox("Tipo", options=["Account", "Product"], index=0, key=f"fc_tp_{llave_factura}_{item_idx}", label_visibility="collapsed")
                         
-                        # CORRECCIÓN 2: SELECTOR DINÁMICO CUENTA VS PRODUCTO EN FC
                         with i2:
                             if tipo_item == "Account":
                                 cat_puc = curr_tenant.get('puc', DEFAULT_PUC)
