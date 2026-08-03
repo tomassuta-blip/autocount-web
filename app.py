@@ -271,6 +271,11 @@ if curr_rol == "SuperAdmin":
     curr_tenant_nit = active_tenant_str.split(" - ")[0]
 else: curr_tenant_nit = curr_user['tenant_nit']
 
+# CORRECCIÓN 1: LIMPIEZA DE CACHÉ AL CAMBIAR DE EMPRESA
+if st.session_state.get('last_tenant_active') != curr_tenant_nit:
+    st.cache_data.clear()
+    st.session_state['last_tenant_active'] = curr_tenant_nit
+
 curr_tenant = db_get_tenant(curr_tenant_nit)
 auto_clean_processed_docs(curr_tenant_nit)
 
@@ -881,10 +886,17 @@ with tab2:
                         i0, i1, i2, i3, i4, i5, i6, i7, i8, i9 = st.columns([0.3, 0.8, 1.8, 1.7, 0.5, 1.0, 1.3, 1.7, 0.9, 0.4])
                         with i0: st.markdown(f"**{item_idx+1}**")
                         with i1: tipo_item = st.selectbox("Tipo", options=["Account", "Product"], index=0, key=f"fc_tp_{llave_factura}_{item_idx}", label_visibility="collapsed")
+                        
+                        # CORRECCIÓN 2: SELECTOR DINÁMICO CUENTA VS PRODUCTO EN FC
                         with i2:
-                            cat_puc = curr_tenant.get('puc', DEFAULT_PUC)
-                            puc_sel = st.selectbox("Código PUC", options=cat_puc, index=0, key=f"puc_sel_{llave_factura}_{item_idx}", label_visibility="collapsed")
-                            code_item = re.sub(r'[^\d]', '', puc_sel.split(" - ")[0].strip())
+                            if tipo_item == "Account":
+                                cat_puc = curr_tenant.get('puc', DEFAULT_PUC)
+                                puc_sel = st.selectbox("Código PUC", options=cat_puc, index=0, key=f"puc_sel_{llave_factura}_{item_idx}", label_visibility="collapsed")
+                                code_item = re.sub(r'[^\d]', '', puc_sel.split(" - ")[0].strip())
+                            else:
+                                prod_sel = st.selectbox("Producto Siigo", options=prods_lista if prods_lista else ["Sin Productos"], key=f"fc_prod_{llave_factura}_{item_idx}", label_visibility="collapsed")
+                                code_item = prod_sel.split(" - ")[0].strip()
+
                         with i3: desc_val = st.text_input("Descripción", value=item['Concepto'], key=f"fc_desc_{llave_factura}_{item_idx}", label_visibility="collapsed")
                         with i4: cant_val = st.number_input("Cant", value=float(item.get('Cantidad', 1.0)), key=f"fc_cant_{llave_factura}_{item_idx}", label_visibility="collapsed")
                         with i5: monto_val = st.number_input("Vr. Unitario", value=float(item['Subtotal']), key=f"fc_val_{llave_factura}_{item_idx}", label_visibility="collapsed")
