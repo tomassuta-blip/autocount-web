@@ -372,8 +372,8 @@ def modal_formulario_tercero(nit_def, nombre_def, es_extranjero=False):
 
 @st.cache_data(ttl=1800)
 def cargar_maestros_siigo(user, key):
-    maestros = {"doc_types_fc": [], "doc_types_ds": [], "impuestos_iva": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_rete": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_ica": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_reteiva": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "pagos": [], "centros_costo": [], "terceros": {}, "terceros_lista": [], "productos": [], "error": err}
     headers, err = get_siigo_headers()
+    maestros = {"doc_types_fc": [], "doc_types_ds": [], "impuestos_iva": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_rete": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_ica": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "impuestos_reteiva": [{"id": 0, "nombre": "Ninguno (0%)", "porcentaje": 0}], "pagos": [], "centros_costo": [], "terceros": {}, "terceros_lista": [], "productos": [], "error": err}
     if not headers: return maestros
 
     try:
@@ -957,7 +957,7 @@ with tab2:
                                 "document": {"id": id_type_fc}, "date": fecha_fac, "supplier": {"identification": nit_ingresado, "branch_office": 0},
                                 "retentions": retentions_payload, "observations": f"Causación AutoCount.ai - Doc {num_fac_clean}",
                                 "items": final_items_payload, "payments": [{"id": id_pago, "value": round(total_neto_calculado, 2), "due_date": fecha_fac}],
-                                "provider_invoice": {"prefix": "FC", "number": int(str(num_fac_clean)[:9])}
+                                "provider_invoice": {"prefix": "FC", "number": num_fac_clean}
                             }
                             if id_cc_head: payload_fc["cost_center"] = id_cc_head
 
