@@ -957,7 +957,7 @@ with tab2:
                                 "document": {"id": id_type_fc}, "date": fecha_fac, "supplier": {"identification": nit_ingresado, "branch_office": 0},
                                 "retentions": retentions_payload, "observations": f"Causación AutoCount.ai - Doc {num_fac_clean}",
                                 "items": final_items_payload, "payments": [{"id": id_pago, "value": round(total_neto_calculado, 2), "due_date": fecha_fac}],
-                                "provider_invoice": {"prefix": "FC", "number": num_fac_clean}
+                                "provider_invoice": {"prefix": "FC", "number": int(str(num_fac_clean)[:9])}
                             }
                             if id_cc_head: payload_fc["cost_center"] = id_cc_head
 
