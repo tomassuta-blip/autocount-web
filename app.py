@@ -13,6 +13,7 @@ import streamlit as st
 from datetime import datetime
 from typing import Dict, List, Any
 from pypdf import PdfReader
+from fpdf import FPDF
 
 # ==========================================
 # CONFIGURACIÓN Y ESTILOS SAAS AUTOCOUNT.AI
@@ -180,8 +181,250 @@ def generar_excel(df):
     return output.getvalue()
 
 # ==========================================
-# CREADOR DE REPORTE EXCEL
+# CREADOR DE COMPROBANTE PDF AUTOCOUNT (NIVEL DIOS)
 # ==========================================
+def generar_comprobante_pdf(hist_record, tenant_razon_social, tenant_nit):
+    pdf = FPDF(orientation='L', unit='mm', format='A4')
+    pdf.add_page()
+    
+    def safe_str(text): 
+        return str(text).encode('latin-1', 'replace').decode('latin-1')
+
+    data = json.loads(hist_record.get('data_json', '{}'))
+    tipo = hist_record.get('tipo', 'FC')
+    moneda = hist_record.get('moneda', 'COP')
+    
+    # Extraer Centro de Costo Global
+    c_costo_global = "N/A"
+    if tipo == 'FC' and "Resumen" in data:
+        c_costo_global = data["Resumen"].get("CentroCosto") or "N/A"
+    elif tipo == 'DS':
+        c_costo_global = data.get("centro_costo") or "N/A"
+        
+    trm = float(data.get("trm", 1.0)) if tipo == 'DS' else 1.0
+
+    # --- ENCABEZADO ---
+    pdf.set_font("Arial", 'B', 20)
+    pdf.cell(40, 15, "X", border=0, align="C") # Espacio para el logo
+    
+    pdf.set_xy(50, 10)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.cell(100, 5, safe_str(tenant_razon_social), ln=True, align="C")
+    pdf.set_x(50)
+    pdf.set_font("Arial", '', 9)
+    pdf.cell(100, 5, safe_str(f"Nit {tenant_nit}"), ln=True, align="C")
+    pdf.set_x(50)
+    pdf.cell(100, 5, "Colombia", ln=True, align="C")
+    
+    pdf.rect(215, 10, 65, 15)
+    pdf.set_xy(215, 12)
+    pdf.set_font("Arial", 'B', 12)
+    tipo_lbl = "Causacion Contable (FC)" if tipo == 'FC' else "Documento Soporte (DS)"
+    pdf.cell(65, 5, safe_str(tipo_lbl), ln=True, align="C")
+    pdf.set_x(215)
+    pdf.set_font("Arial", 'B', 10)
+    siigo_num = hist_record['id_siigo_num'].split('|||')[0] if hist_record.get('id_siigo_num') else "Pendiente"
+    pdf.cell(65, 5, safe_str(f"No. {siigo_num}"), ln=True, align="C")
+
+    pdf.ln(15)
+
+    # --- CAJAS DE INFORMACIÓN ---
+    y_info = pdf.get_y()
+    
+    # Caja Izquierda
+    pdf.rect(10, y_info, 150, 20)
+    pdf.set_xy(12, y_info + 2)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(20, 5, "Proveedor:")
+    pdf.set_font("Arial", '', 9)
+    pdf.cell(120, 5, safe_str(hist_record.get('proveedor', '')))
+    
+    pdf.set_xy(12, y_info + 8)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(20, 5, "NIT:")
+    pdf.set_font("Arial", '', 9)
+    pdf.cell(45, 5, safe_str(hist_record.get('nit', '')))
+    
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(20, 5, "C. Costo:")
+    pdf.set_font("Arial", '', 9)
+    c_costo_clean = c_costo_global.split(" - ")[0].strip() if " - " in c_costo_global else c_costo_global
+    pdf.cell(40, 5, safe_str(c_costo_clean))
+    
+    pdf.set_xy(12, y_info + 14)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(20, 5, "Doc. Prov:")
+    pdf.set_font("Arial", '', 9)
+    pdf.cell(120, 5, safe_str(hist_record.get('id_doc_prov', '')))
+
+    # Caja Derecha
+    pdf.rect(165, y_info, 115, 20)
+    pdf.set_xy(167, y_info + 2)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(35, 5, "Fecha Causacion:")
+    pdf.set_font("Arial", '', 9)
+    pdf.cell(30, 5, safe_str(hist_record.get('fecha', '')))
+    
+    pdf.set_xy(167, y_info + 8)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(35, 5, "Moneda / TRM:")
+    pdf.set_font("Arial", '', 9)
+    trm_str = f"{moneda} / ${trm:,.2f}" if moneda == 'USD' else f"{moneda} / N/A"
+    pdf.cell(30, 5, safe_str(trm_str))
+    
+    pdf.set_xy(167, y_info + 14)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(35, 5, "Usuario:")
+    pdf.set_font("Arial", '', 9)
+    pdf.cell(30, 5, safe_str(hist_record.get('usuario', '')))
+
+    pdf.ln(10)
+
+    # --- CABECERA DE LA TABLA ---
+    pdf.set_y(y_info + 25)
+    pdf.set_font("Arial", 'B', 8)
+    pdf.set_fill_color(240, 240, 240)
+    
+    col_w = [10, 22, 23, 85, 12, 25, 20, 25, 23, 25]
+    headers = ["Item", "Cta. PUC", "C. Costo", "Descripcion", "Cant", "Vr. Unitario", "Val. Desc", "Impto. Cargo", "Impto. Rete", "Vr. Total"]
+    
+    for i in range(len(headers)):
+        pdf.cell(col_w[i], 8, headers[i], border=1, align="C", fill=True)
+    pdf.ln(8)
+
+    # --- CUERPO DE LA TABLA ---
+    pdf.set_font("Arial", '', 8)
+    items = data.get("Detalle", []) if tipo == 'FC' else data.get("items_custom", [])
+
+    for idx, item in enumerate(items):
+        if tipo == 'FC':
+            desc = item.get("Concepto", "Sin descripción")
+            cant = float(item.get("Cantidad", 1))
+            v_unit = float(item.get("Valor Unitario", 0))
+            iva_pct = float(item.get("IVA %", 0))
+            iva_val = float(item.get("Valor IVA", 0))
+            vr_total = float(item.get("Total Línea", 0))
+            puc = item.get("Cta_PUC", "N/A")
+        else:
+            desc = item.get("description", "Sin descripción")
+            cant = float(item.get("quantity", 1))
+            v_unit = float(item.get("price", 0))
+            iva_pct = float(item.get("pct_iva", 0))
+            iva_val = (cant * v_unit) * (iva_pct / 100.0)
+            vr_total = (cant * v_unit) + iva_val
+            puc = item.get("code", "N/A")
+            
+        # Extraer porcentaje limpio para la columna pequeña
+        ret_name = str(item.get("Retencion_Nombre", "0%"))
+        if ret_name != "0%":
+            match = re.search(r'(\d+(\.\d+)?)%', ret_name)
+            rete_str = match.group(0) if match else ret_name[:10]
+        else:
+            rete_str = "0%"
+
+        pdf.cell(col_w[0], 6, str(idx+1), border=1, align="C")
+        pdf.cell(col_w[1], 6, safe_str(puc), border=1, align="C")
+        pdf.cell(col_w[2], 6, safe_str(c_costo_clean)[:10], border=1, align="C")
+        pdf.cell(col_w[3], 6, safe_str(desc)[:55], border=1, align="L")
+        pdf.cell(col_w[4], 6, f"{cant:.2f}", border=1, align="C")
+        pdf.cell(col_w[5], 6, f"${v_unit:,.2f}", border=1, align="R")
+        pdf.cell(col_w[6], 6, "$0.00", border=1, align="R")
+        pdf.cell(col_w[7], 6, f"{iva_pct}% (${iva_val:,.2f})", border=1, align="R")
+        pdf.cell(col_w[8], 6, rete_str, border=1, align="C")
+        pdf.cell(col_w[9], 6, f"${vr_total:,.2f}", border=1, align="R")
+        pdf.ln(6)
+
+    # --- TOTALES Y OBSERVACIONES ---
+    pdf.ln(5)
+    y_totals = pdf.get_y()
+    
+    if tipo == 'FC':
+        res = data.get("Resumen", {})
+        forma_pago = res.get("FormaPago", "Crédito / Efectivo")
+        ret_desglose = res.get("Retenciones_Desglose", {})
+        subtotal = float(res.get("Subtotal", 0))
+        iva = float(res.get("IVA", 0))
+        retenciones = float(res.get("Retenciones", 0))
+        total_pagar = float(res.get("TotalPagar", 0))
+    else:
+        forma_pago = data.get("FormaPago", "Crédito / Efectivo")
+        ret_desglose = data.get("Retenciones_Desglose", {})
+        subtotal = float(data.get("subtotal", 0))
+        iva = float(data.get("iva", 0))
+        retenciones = float(data.get("retenciones", 0))
+        total_pagar = float(data.get("TotalPagar", 0))
+
+    # Textos izquierda
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(100, 5, "Condiciones de Pago / Observaciones:")
+    pdf.ln(5)
+    pdf.set_font("Arial", '', 9)
+    if tipo == 'FC':
+        obs_text = f"Forma de Pago: {forma_pago}\nAuditoria: Valores cruzados contra XML exitosamente.\nDocumento generado automaticamente por AutoCount.ai"
+    else:
+        obs_text = f"Forma de Pago: {forma_pago}\nDocumento Soporte en adquisiciones efectuadas a sujetos no obligados a facturar.\nAuditoria: Generado automaticamente por AutoCount.ai"
+    pdf.multi_cell(140, 5, safe_str(obs_text))
+    
+    # Caja de Totales Discriminados (Derecha)
+    mon_lbl = f" ({moneda})" if moneda == 'USD' else ""
+    y_curr = y_totals
+    
+    # Bruto
+    pdf.set_xy(165, y_curr)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(50, 6, f"Total Bruto{mon_lbl}", border=1)
+    pdf.set_font("Arial", '', 9)
+    pdf.cell(65, 6, f"${subtotal:,.2f}", border=1, align="R", ln=True)
+    y_curr += 6
+    
+    # IVA
+    pdf.set_xy(165, y_curr)
+    pdf.set_font("Arial", 'B', 9)
+    pdf.cell(50, 6, f"Impto. Cargo (IVA){mon_lbl}", border=1)
+    pdf.set_font("Arial", '', 9)
+    pdf.cell(65, 6, f"${iva:,.2f}", border=1, align="R", ln=True)
+    y_curr += 6
+
+    # Retenciones Dinámicas
+    if ret_desglose:
+        for k, v in ret_desglose.items():
+            if float(v) > 0:
+                pdf.set_xy(165, y_curr)
+                pdf.set_font("Arial", 'B', 9)
+                short_k = (str(k)[:22] + '..') if len(str(k)) > 24 else str(k)
+                pdf.cell(50, 6, safe_str(short_k), border=1)
+                pdf.set_font("Arial", '', 9)
+                pdf.cell(65, 6, f"${float(v):,.2f}", border=1, align="R", ln=True)
+                y_curr += 6
+    else:
+        pdf.set_xy(165, y_curr)
+        pdf.set_font("Arial", 'B', 9)
+        pdf.cell(50, 6, f"Retenciones{mon_lbl}", border=1)
+        pdf.set_font("Arial", '', 9)
+        pdf.cell(65, 6, f"${retenciones:,.2f}", border=1, align="R", ln=True)
+        y_curr += 6
+
+    # Total a Pagar
+    pdf.set_xy(165, y_curr)
+    pdf.set_font("Arial", 'B', 10)
+    pdf.set_fill_color(230, 230, 230)
+    pdf.cell(50, 8, f"Total a Pagar{mon_lbl}", border=1, fill=True)
+    pdf.cell(65, 8, f"${total_pagar:,.2f}", border=1, align="R", fill=True, ln=True)
+    y_curr += 8
+    
+    if moneda == 'USD' and trm > 1:
+        pdf.set_xy(165, y_curr)
+        pdf.set_font("Arial", 'B', 9)
+        pdf.cell(50, 6, "Equivalente (COP)", border=1)
+        pdf.set_font("Arial", '', 9)
+        pdf.cell(65, 6, f"${total_pagar * trm:,.2f} COP", border=1, align="R", ln=True)
+
+    try:
+        pdf_bytes = pdf.output(dest='S').encode('latin-1')
+    except Exception:
+        pdf_bytes = bytes(pdf.output())
+    return pdf_bytes
+
 def extraer_valores_reporte(d, h_total=None):
     is_fc = d.get("tipo_origen") == "FC" or "Resumen" in d
     
@@ -200,7 +443,6 @@ def extraer_valores_reporte(d, h_total=None):
             
         valor_con_iva = round(subt + iva, 2)
         
-        # Recupera el Total a Pagar real guardado o lo recalcula
         if "TotalPagar" in r:
             valor_pagar = float(r["TotalPagar"])
             retenciones = round(valor_con_iva - valor_pagar, 2)
@@ -503,7 +745,6 @@ def consultar_trm_oficial_script(fecha_str):
     except Exception: pass
     return 3995.00
 
-# MODIFICADO PARA RETORNAR EL VALOR REAL DE PAGO EXIGIDO POR SIIGO
 def causar_en_siigo_api(payload, is_ds=False):
     headers, err = get_siigo_headers()
     if not headers: return False, f"No Token: {err}", None, None, None
@@ -523,21 +764,6 @@ def causar_en_siigo_api(payload, is_ds=False):
         if res.status_code in [200, 201]: return True, f"✅ EXITOSO en Siigo", res_json.get("id"), res_json.get('name') or f"{'DS' if is_ds else 'Compra'} No. {res_json.get('number', '')}", real_total
         else: return False, f"❌ ERROR: {res.text}", None, None, None
     except Exception as e: return False, f"❌ Error de Red: {e}", None, None, None
-
-def obtener_pdf_siigo_api(doc_id, is_ds=False):
-    headers, err = get_siigo_headers()
-    if not headers: return None
-    try:
-        res = requests.get(f"https://api.siigo.com/v1/purchase-support-documents/{doc_id}/pdf" if is_ds else f"https://api.siigo.com/v1/purchases/{doc_id}/pdf", headers=headers, timeout=10)
-        if res.status_code == 200:
-            data = res.json()
-            if "base64" in data: return base64.b64decode(data["base64"])
-            elif "pdf" in data: return base64.b64decode(data["pdf"])
-            elif "url" in data:
-                res_pdf = requests.get(data["url"], timeout=10)
-                if res_pdf.status_code == 200: return res_pdf.content
-    except Exception: pass
-    return None
 
 def parse_ubl_xml(xml_content, pdf_bytes_adjunto=None, tenant_nit=None):
     try:
@@ -1062,27 +1288,44 @@ with tab2:
 
                             final_items_payload = []
                             val_retenciones_calc = 0.0
+                            ret_desglose = {}
                             
-                            for r_it in valid_items:
-                                sub_lin = r_it["quantity"] * r_it["price"]
-                                if r_it["id_rete"] and int(r_it["id_rete"]) > 0:
-                                    pct_rete = next((float(i["porcentaje"]) for i in list_rete if i["id"] == int(r_it["id_rete"])), 0)
-                                    val_retenciones_calc += sub_lin * (pct_rete/100.0)
-
-                            if id_reteiva and int(id_reteiva) > 0:
-                                pct_rete = next((float(i["porcentaje"]) for i in list_reteiva if i["id"] == int(id_reteiva)), 0)
-                                val_retenciones_calc += acum_iva * (pct_rete/100.0)
-                            if id_reteica and int(id_reteica) > 0:
-                                pct_rete = next((float(i["porcentaje"]) for i in list_ica if i["id"] == int(id_reteica)), 0)
-                                val_retenciones_calc += acum_subtotal * (pct_rete/100.0)
-
-                            for it in valid_items:
+                            for idx_item, it in enumerate(valid_items):
+                                sub_lin = it["quantity"] * it["price"]
                                 taxes_list = []
                                 if it["id_iva"] and int(it["id_iva"]) > 0: taxes_list.append({"id": int(it["id_iva"])})
-                                if it["id_rete"] and int(it["id_rete"]) > 0: taxes_list.append({"id": int(it["id_rete"])})
+                                if it["id_rete"] and int(it["id_rete"]) > 0: 
+                                    taxes_list.append({"id": int(it["id_rete"])})
+                                    pct_rete = next((float(i["porcentaje"]) for i in list_rete if i["id"] == int(it["id_rete"])), 0)
+                                    nom_rete = next((i["nombre"] for i in list_rete if i["id"] == int(it["id_rete"])), f"Retencion {pct_rete}%")
+                                    val_r = sub_lin * (pct_rete/100.0)
+                                    val_retenciones_calc += val_r
+                                    ret_desglose[nom_rete] = ret_desglose.get(nom_rete, 0) + val_r
+                                    
                                 item_dict = {"code": it["code"], "type": it["type"], "description": it["description"], "quantity": it["quantity"], "price": it["price"], "taxes": taxes_list}
                                 if it["cost_center"]: item_dict["cost_center"] = it["cost_center"]
                                 final_items_payload.append(item_dict)
+
+                            if id_reteiva and int(id_reteiva) > 0:
+                                pct_rete = next((float(i["porcentaje"]) for i in list_reteiva if i["id"] == int(id_reteiva)), 0)
+                                val_r = acum_iva * (pct_rete/100.0)
+                                val_retenciones_calc += val_r
+                                ret_desglose[sel_reteiva] = ret_desglose.get(sel_reteiva, 0) + val_r
+                                
+                            if id_reteica and int(id_reteica) > 0:
+                                pct_rete = next((float(i["porcentaje"]) for i in list_ica if i["id"] == int(id_reteica)), 0)
+                                val_r = acum_subtotal * (pct_rete/100.0)
+                                val_retenciones_calc += val_r
+                                ret_desglose[sel_reteica] = ret_desglose.get(sel_reteica, 0) + val_r
+
+                            # Inyectar nombres de retenciones a la DB para el PDF
+                            for idx_item, it in enumerate(items_siigo):
+                                if it["id_rete"] and int(it["id_rete"]) > 0:
+                                    nom_rete = next((i["nombre"] for i in list_rete if i["id"] == int(it["id_rete"])), "Rete")
+                                    doc["Detalle"][idx_item]["Retencion_Nombre"] = nom_rete
+                                else:
+                                    doc["Detalle"][idx_item]["Retencion_Nombre"] = "0%"
+                                doc["Detalle"][idx_item]["Cta_PUC"] = it["code"]
 
                             retentions_payload = []
                             if id_reteiva and int(id_reteiva) > 0: retentions_payload.append({"id": int(id_reteiva)})
@@ -1105,6 +1348,8 @@ with tab2:
                                 doc["Resumen"]["Subtotal"] = acum_subtotal
                                 doc["Resumen"]["IVA"] = acum_iva
                                 doc["Resumen"]["Retenciones"] = actual_retentions
+                                doc["Resumen"]["Retenciones_Desglose"] = ret_desglose
+                                doc["Resumen"]["FormaPago"] = pago_sel
                                 doc["Resumen"]["TotalPagar"] = real_total_pagar
                                 doc["Resumen"]["Total"] = total_neto_calculado
                                 doc["UsuarioCausador"] = curr_user["email"]
@@ -1220,18 +1465,36 @@ with tab3:
                             valid_items_ds = [it for it in items_ds_siigo if it["price"] > 0 or len(items_ds_siigo) == 1]
                             
                             val_retenciones_calc_ds = 0.0
-                            for r_it in valid_items_ds:
-                                sub_lin = r_it["quantity"] * r_it["price"]
-                                if r_it["id_rete"] and int(r_it["id_rete"]) > 0:
-                                    pct_rete = next((float(i["porcentaje"]) for i in list_rete if i["id"] == int(r_it["id_rete"])), 0)
-                                    val_retenciones_calc_ds += sub_lin * (pct_rete/100.0)
+                            ret_desglose_ds = {}
+                            
+                            for it in valid_items_ds:
+                                sub_lin = it["quantity"] * it["price"]
+                                if it["id_rete"] and int(it["id_rete"]) > 0:
+                                    pct_rete = next((float(i["porcentaje"]) for i in list_rete if i["id"] == int(it["id_rete"])), 0)
+                                    nom_rete = next((i["nombre"] for i in list_rete if i["id"] == int(it["id_rete"])), f"Retencion {pct_rete}%")
+                                    val_r = sub_lin * (pct_rete/100.0)
+                                    val_retenciones_calc_ds += val_r
+                                    ret_desglose_ds[nom_rete] = ret_desglose_ds.get(nom_rete, 0) + val_r
 
                             if id_reteiva_ds and int(id_reteiva_ds) > 0:
                                 pct_rete = next((float(i["porcentaje"]) for i in list_reteiva if i["id"] == int(id_reteiva_ds)), 0)
-                                val_retenciones_calc_ds += acum_iva_ds * (pct_rete/100.0)
+                                val_r = acum_iva_ds * (pct_rete/100.0)
+                                val_retenciones_calc_ds += val_r
+                                ret_desglose_ds[sel_reteiva_ds] = ret_desglose_ds.get(sel_reteiva_ds, 0) + val_r
+                                
                             if id_reteica_ds and int(id_reteica_ds) > 0:
                                 pct_rete = next((float(i["porcentaje"]) for i in list_ica if i["id"] == int(id_reteica_ds)), 0)
-                                val_retenciones_calc_ds += acum_subtotal_ds * (pct_rete/100.0)
+                                val_r = acum_subtotal_ds * (pct_rete/100.0)
+                                val_retenciones_calc_ds += val_r
+                                ret_desglose_ds[sel_reteica_ds] = ret_desglose_ds.get(sel_reteica_ds, 0) + val_r
+
+                            # Inyectar nombres de retenciones
+                            for idx_item, it in enumerate(items_ds_siigo):
+                                if it["id_rete"] and int(it["id_rete"]) > 0:
+                                    nom_rete = next((i["nombre"] for i in list_rete if i["id"] == int(it["id_rete"])), "Rete")
+                                    ds["items_custom"][idx_item]["Retencion_Nombre"] = nom_rete
+                                else:
+                                    ds["items_custom"][idx_item]["Retencion_Nombre"] = "0%"
 
                             final_items_payload_ds = []
                             for it in valid_items_ds:
@@ -1264,6 +1527,8 @@ with tab3:
                                 ds["subtotal"] = acum_subtotal_ds
                                 ds["iva"] = acum_iva_ds
                                 ds["retenciones"] = actual_retentions
+                                ds["Retenciones_Desglose"] = ret_desglose_ds
+                                ds["FormaPago"] = pago_sel
                                 ds["TotalPagar"] = real_total_pagar
                                 ds["total"] = total_enviar_ds
                                 ds["UsuarioCausador"] = curr_user["email"]
@@ -1284,21 +1549,21 @@ with tab4:
             raw_siigo_str = c.get('id_siigo_num', '') or ''
             num_display, uuid_siigo = raw_siigo_str.split("|||", 1) if "|||" in raw_siigo_str else (raw_siigo_str, raw_siigo_str)
             with st.container(border=True):
-                c1, c2, c3, c4 = st.columns([2, 2.5, 1.5, 2])
+                c1, c2, c3, c4 = st.columns([1.5, 2.5, 1.5, 3])
                 with c1: 
                     st.markdown(f"⚡ <span class='badge-siigo'>{num_display}</span>", unsafe_allow_html=True)
                     st.caption(f"Ref: {c['tipo']} #{c['id_doc_prov']} | Fecha: {c['fecha']}")
                 with c2: st.markdown(f"**{c['proveedor']}**"); st.caption(f"NIT: {c['nit']}")
                 with c3: st.markdown(f"**Total:** {'$' if c['moneda'] == 'COP' else 'USD $'}{c['total']:,.2f}")
+                
                 with c4:
-                    cb1, cb2 = st.columns(2)
-                    with cb1:
-                        if c["pdf_original"]: st.download_button("📄 PDF Origen", data=c["pdf_original"], file_name=f"Orig_{c['id_doc_prov']}.pdf", key=f"dl_o_{idx}")
-                    with cb2:
-                        if uuid_siigo and st.button("⚡ PDF Siigo", key=f"dl_s_{idx}"):
-                            pdf = obtener_pdf_siigo_api(uuid_siigo, is_ds=(c["tipo"]=="DS"))
-                            if pdf: st.download_button("Descargar PDF", data=pdf, file_name=f"Siigo_{c['id_doc_prov']}.pdf", key=f"btn_dl_pdf_siigo_{idx}")
-                            else: st.error("No se pudo obtener el PDF de Siigo.")
+                    # 1. PDF del XML Original del proveedor
+                    if c["pdf_original"]: 
+                        st.download_button("📄 PDF Origen", data=c["pdf_original"], file_name=f"Original_{c['id_doc_prov']}.pdf", key=f"dl_o_{idx}", use_container_width=True)
+                    
+                    # 2. PDF de Causación Contable Oficial de AutoCount
+                    pdf_causacion = generar_comprobante_pdf(c, curr_tenant['razon_social'], curr_tenant['nit'])
+                    st.download_button("⚡ PDF Causación Contable", data=pdf_causacion, file_name=f"Causacion_{c['tipo']}_{c['id_doc_prov']}.pdf", mime="application/pdf", key=f"btn_dl_pdf_auto_{idx}", use_container_width=True)
 
 # ==========================================
 # PESTAÑA 5: REPORTES Y EXPORTACIONES
