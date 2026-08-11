@@ -634,7 +634,7 @@ def process_bytes(file_name, file_bytes, data_list, tenant_nit=None):
 
 def extraer_facturas_desde_drive_cloud(web_app_url, data_list, tenant_nit=None):
     try:
-        res = requests.get(web_app_url, timeout=30)
+        res = requests.get(web_app_url, timeout=300)
         if res.status_code == 200:
             archivos = res.json()
             if not isinstance(archivos, list) or len(archivos) == 0:
@@ -764,7 +764,7 @@ with tab1:
             data_list = []
             
             if btn_manual_fc and uploaded_fc:
-                for file in uploaded_fc: process_bytes(file.name, file.read(), data_list, curr_tenant_nit=curr_tenant_nit)
+                for file in uploaded_fc: process_bytes(file.name, file.read(), data_list, tenant_nit=curr_tenant_nit)
             
             if btn_drive_fc:
                 url_api = "https://script.google.com/macros/s/AKfycbyyujzRVc6JsE--ENDSDiAMyIDNKJbDxbUirpTBXnc3KJxNI6HJfU7dJT9di97UTuzK/exec"
