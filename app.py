@@ -179,6 +179,9 @@ def generar_excel(df):
         df.to_excel(writer, index=False, sheet_name='Reporte')
     return output.getvalue()
 
+# ==========================================
+# CREADOR DE REPORTE EXCEL
+# ==========================================
 def extraer_valores_reporte(d, h_total=None):
     is_fc = d.get("tipo_origen") == "FC" or "Resumen" in d
     
@@ -191,18 +194,31 @@ def extraer_valores_reporte(d, h_total=None):
         if detalles:
             subt = sum(float(i.get("Subtotal", float(i.get("Cantidad", 1)) * float(i.get("Valor Unitario", 0)))) for i in detalles)
             iva = sum(float(i.get("Valor IVA", float(i.get("Subtotal", 0)) * (float(i.get("IVA %", 0))/100.0))) for i in detalles)
-            tot = subt + iva
         else:
             subt = float(r.get("Subtotal", h_total or 0))
             iva = float(r.get("IVA", 0))
-            tot = float(r.get("Total", subt + iva))
+            
+        valor_con_iva = round(subt + iva, 2)
+        
+        # Recupera el Total a Pagar real guardado o lo recalcula
+        if "TotalPagar" in r:
+            valor_pagar = float(r["TotalPagar"])
+            retenciones = round(valor_con_iva - valor_pagar, 2)
+        else:
+            retenciones = float(r.get("Retenciones", 0.0))
+            valor_pagar = round(valor_con_iva - retenciones, 2)
         
         return {
-            "tipo": "Factura Compra", "doc_ref": r.get("ID", d.get("doc_ref", "")), "fecha": r.get("Fecha", d.get("fecha", "")),
-            "nit": r.get("NIT", d.get("nit", "")), "proveedor": r.get("Proveedor", d.get("proveedor", "")), "conceptos": conceptos,
-            "moneda": "COP", "subtotal": round(subt, 2), "iva": round(iva, 2), "total": round(tot, 2),
-            "aprobador": r.get("UsuarioAprobador", d.get("UsuarioAprobador", "N/A")), "fecha_aprobacion": r.get("FechaAprobacion", d.get("FechaAprobacion", "N/A")),
-            "causador": d.get("UsuarioCausador", "N/A"), "fecha_causacion": d.get("FechaCausacion", "N/A")
+            "fecha_recibido": r.get("Fecha", d.get("fecha", "")),
+            "fecha_vencimiento": r.get("FechaVencimiento", r.get("Fecha", d.get("fecha", ""))),
+            "nit": r.get("NIT", d.get("nit", "")),
+            "proveedor": r.get("Proveedor", d.get("proveedor", "")),
+            "doc_ref": r.get("ID", d.get("doc_ref", "")),
+            "conceptos": conceptos,
+            "centro_costo": r.get("CentroCosto", "-- Sin Centro de Costo --") or "-- Sin Centro de Costo --",
+            "valor_con_iva": valor_con_iva,
+            "retenciones": retenciones,
+            "valor_a_pagar": valor_pagar
         }
     else:
         items = d.get("items_custom", [])
@@ -212,18 +228,30 @@ def extraer_valores_reporte(d, h_total=None):
         if items:
             subt = sum(float(i.get("price", 0)) * float(i.get("quantity", 1)) for i in items)
             iva = sum(float(i.get("price", 0)) * float(i.get("quantity", 1)) * (float(i.get("pct_iva", 0))/100.0) for i in items)
-            tot = subt + iva
         else:
             subt = float(d.get("subtotal", d.get("monto_origen", h_total or 0)))
             iva = float(d.get("iva", 0))
-            tot = float(d.get("total", subt + iva))
+            
+        valor_con_iva = round(subt + iva, 2)
+        
+        if "TotalPagar" in d:
+            valor_pagar = float(d["TotalPagar"])
+            retenciones = round(valor_con_iva - valor_pagar, 2)
+        else:
+            retenciones = float(d.get("retenciones", 0.0))
+            valor_pagar = round(valor_con_iva - retenciones, 2)
             
         return {
-            "tipo": "Doc. Soporte", "doc_ref": d.get("documento_ref", d.get("doc_ref", "")), "fecha": d.get("fecha", ""),
-            "nit": d.get("nit", ""), "proveedor": d.get("proveedor", ""), "conceptos": conceptos,
-            "moneda": d.get("moneda_origen", "COP"), "subtotal": round(subt, 2), "iva": round(iva, 2), "total": round(tot, 2),
-            "aprobador": d.get("UsuarioAprobador", "N/A"), "fecha_aprobacion": d.get("FechaAprobacion", "N/A"),
-            "causador": d.get("UsuarioCausador", "N/A"), "fecha_causacion": d.get("FechaCausacion", "N/A")
+            "fecha_recibido": d.get("fecha", ""),
+            "fecha_vencimiento": d.get("FechaVencimiento", d.get("fecha", "")),
+            "nit": d.get("nit", ""),
+            "proveedor": d.get("proveedor", ""),
+            "doc_ref": d.get("documento_ref", d.get("doc_ref", "")),
+            "conceptos": conceptos,
+            "centro_costo": d.get("centro_costo", "-- Sin Centro de Costo --") or "-- Sin Centro de Costo --",
+            "valor_con_iva": valor_con_iva,
+            "retenciones": retenciones,
+            "valor_a_pagar": valor_pagar
         }
 
 # ==========================================
@@ -307,7 +335,6 @@ st.markdown(f"""
 # ==========================================
 # 🔑 SIIGO API AUTHENTICATION & FUNCIONES
 # ==========================================
-# BLINDAJE TOTAL 2: CACHÉ AISLADA POR TENANT NIT
 @st.cache_data(ttl=3600)
 def obtener_token_siigo(tenant_nit, user, key):
     try:
@@ -339,7 +366,7 @@ def crear_tercero_express_siigo(nit, nombre, apellidos="", es_empresa=True, id_t
 
     try:
         res = requests.post("https://api.siigo.com/v1/customers", json=payload, headers=headers, timeout=10)
-        if res.status_code in [200, 201]: st.cache_data.clear(); return True, f"✅ Tercero Creado con Éxito en Siigo (NIT: {nit_limpio})"
+        if res.status_code in [200, 201]: return True, f"✅ Tercero Creado con Éxito en Siigo (NIT: {nit_limpio})"
         else: return False, f"❌ Error Siigo API ({res.status_code}): {res.text}"
     except Exception as e: return False, f"❌ Error de Conexión: {e}"
 
@@ -375,7 +402,6 @@ def modal_formulario_tercero(nit_def, nombre_def, es_extranjero=False):
             if exito_c: st.success(msg_c); st.rerun()
             else: st.error(msg_c)
 
-# BLINDAJE TOTAL 3: CARGA DE MAESTROS AISLADA
 @st.cache_data(ttl=1800)
 def cargar_maestros_siigo(tenant_nit, user, key):
     headers, err = get_siigo_headers()
@@ -477,23 +503,26 @@ def consultar_trm_oficial_script(fecha_str):
     except Exception: pass
     return 3995.00
 
+# MODIFICADO PARA RETORNAR EL VALOR REAL DE PAGO EXIGIDO POR SIIGO
 def causar_en_siigo_api(payload, is_ds=False):
     headers, err = get_siigo_headers()
-    if not headers: return False, f"No Token: {err}", None, None
+    if not headers: return False, f"No Token: {err}", None, None, None
     url_envio = "https://api.siigo.com/v1/purchase-support-documents" if is_ds else "https://api.siigo.com/v1/purchases"
+    real_total = payload["payments"][0]["value"]
     try:
         res = requests.post(url_envio, json=payload, headers=headers, timeout=10)
         res_json = res.json()
         if res.status_code == 400 and res_json.get("errors") and res_json["errors"][0].get("code") == "invalid_total_payments":
             match = re.search(r'calculated is (\d+(\.\d+)?)', res_json["errors"][0].get("message", ""))
             if match:
-                payload["payments"][0]["value"] = round(float(match.group(1)), 2)
+                real_total = round(float(match.group(1)), 2)
+                payload["payments"][0]["value"] = real_total
                 res = requests.post(url_envio, json=payload, headers=headers, timeout=10)
                 res_json = res.json()
 
-        if res.status_code in [200, 201]: return True, f"✅ EXITOSO en Siigo", res_json.get("id"), res_json.get('name') or f"{'DS' if is_ds else 'Compra'} No. {res_json.get('number', '')}"
-        else: return False, f"❌ ERROR: {res.text}", None, None
-    except Exception as e: return False, f"❌ Error de Red: {e}", None, None
+        if res.status_code in [200, 201]: return True, f"✅ EXITOSO en Siigo", res_json.get("id"), res_json.get('name') or f"{'DS' if is_ds else 'Compra'} No. {res_json.get('number', '')}", real_total
+        else: return False, f"❌ ERROR: {res.text}", None, None, None
+    except Exception as e: return False, f"❌ Error de Red: {e}", None, None, None
 
 def obtener_pdf_siigo_api(doc_id, is_ds=False):
     headers, err = get_siigo_headers()
@@ -510,11 +539,14 @@ def obtener_pdf_siigo_api(doc_id, is_ds=False):
     except Exception: pass
     return None
 
-def parse_ubl_xml(xml_content, pdf_bytes_adjunto=None):
+def parse_ubl_xml(xml_content, pdf_bytes_adjunto=None, tenant_nit=None):
     try:
         root = ET.fromstring(xml_content)
         for elem in root.iter():
             if '}' in elem.tag: elem.tag = elem.tag.split('}', 1)[1]
+            
+        if root.tag in ["ApplicationResponse", "Event"]: return None
+
         if root.tag == "AttachedDocument":
             attachment = root.find(".//Attachment/ExternalReference/Description")
             if attachment is not None and attachment.text:
@@ -523,13 +555,34 @@ def parse_ubl_xml(xml_content, pdf_bytes_adjunto=None):
                     for elem in root.iter():
                         if '}' in elem.tag: elem.tag = elem.tag.split('}', 1)[1]
                 except Exception: pass
+                
+        if root.tag in ["ApplicationResponse", "Event"]: return None
+            
+        if tenant_nit:
+            customer_node = root.find(".//AccountingCustomerParty")
+            if customer_node is not None:
+                cust_nit = customer_node.findtext(".//CompanyID") or customer_node.findtext(".//PartyIdentification/ID") or ""
+                cust_nit_clean = re.sub(r'\D', '', str(cust_nit))
+                tenant_nit_clean = re.sub(r'\D', '', str(tenant_nit))
+                if cust_nit_clean and tenant_nit_clean and cust_nit_clean != tenant_nit_clean:
+                    return None
 
         factura_id_raw = root.findtext(".//ID") or "1"
         factura_id_solo_num = re.sub(r'\D', '', factura_id_raw) or factura_id_raw
         fecha = root.findtext(".//IssueDate") or datetime.now().strftime("%Y-%m-%d")
+        fecha_venc = root.findtext(".//DueDate") or root.findtext(".//PaymentDueDate") or fecha
+        
         supplier_node = root.find(".//AccountingSupplierParty")
-        supplier_name = supplier_node.findtext(".//RegistrationName") or supplier_node.findtext(".//Name") or "" if supplier_node is not None else ""
-        supplier_nit = supplier_node.findtext(".//CompanyID") or "" if supplier_node is not None else ""
+        supplier_name = ""
+        supplier_nit = ""
+        if supplier_node is not None:
+            supplier_name = supplier_node.findtext(".//RegistrationName") or supplier_node.findtext(".//PartyName/Name") or supplier_node.findtext(".//Name") or supplier_node.findtext(".//PartyLegalEntity/RegistrationName") or ""
+            supplier_nit = supplier_node.findtext(".//CompanyID") or supplier_node.findtext(".//PartyIdentification/ID") or ""
+            
+        if not supplier_name:
+            supplier_name = root.findtext(".//RegistrationName") or root.findtext(".//PartyName/Name") or "Proveedor Sin Nombre"
+        if not supplier_nit:
+            supplier_nit = root.findtext(".//CompanyID") or root.findtext(".//PartyIdentification/ID") or ""
 
         pdf_bytes = pdf_bytes_adjunto
         if not pdf_bytes:
@@ -540,6 +593,7 @@ def parse_ubl_xml(xml_content, pdf_bytes_adjunto=None):
 
         lineas_detalle = []
         subtotal_factura, iva_factura = 0.0, 0.0
+        
         for linea in root.findall(".//InvoiceLine") or root.findall(".//CreditNoteLine"):
             desc_node = linea.find(".//Item/Description") or linea.find(".//Description")
             concepto = desc_node.text if desc_node is not None else "Sin descripción"
@@ -556,25 +610,48 @@ def parse_ubl_xml(xml_content, pdf_bytes_adjunto=None):
             lineas_detalle.append({"Concepto": concepto, "Cantidad": qty, "Valor Unitario": precio_uni, "Subtotal": subtotal_linea, "IVA %": iva_pct, "Valor IVA": iva_valor, "Total Línea": subtotal_linea + iva_valor})
             subtotal_factura += subtotal_linea; iva_factura += iva_valor
 
-        monetary_node = root.find(".//LegalMonetaryTotal")
+        monetary_node = root.find(".//LegalMonetaryTotal") or root.find(".//RequestedMonetaryTotal")
         total_oficial = float(monetary_node.findtext(".//PayableAmount") or (subtotal_factura + iva_factura)) if monetary_node is not None else (subtotal_factura + iva_factura)
 
-        return {"tipo_origen": "FC", "Resumen": {"Tipo": "Factura", "ID": factura_id_solo_num, "Fecha": fecha, "NIT": supplier_nit, "Proveedor": supplier_name, "Subtotal": subtotal_factura, "IVA": iva_factura, "Total": total_oficial, "Estado": "Pendiente", "Moneda": "COP", "CentroCosto": None}, "Detalle": lineas_detalle, "pdf_b64": base64.b64encode(pdf_bytes).decode('utf-8') if pdf_bytes else None}
+        tipo_doc = "Nota Crédito" if root.tag == "CreditNote" else "Factura"
+
+        return {"tipo_origen": "FC", "Resumen": {"Tipo": tipo_doc, "ID": factura_id_solo_num, "Fecha": fecha, "FechaVencimiento": fecha_venc, "NIT": supplier_nit, "Proveedor": supplier_name, "Subtotal": subtotal_factura, "IVA": iva_factura, "Retenciones": 0.0, "TotalPagar": total_oficial, "Total": total_oficial, "Estado": "Pendiente", "Moneda": "COP", "CentroCosto": None}, "Detalle": lineas_detalle, "pdf_b64": base64.b64encode(pdf_bytes).decode('utf-8') if pdf_bytes else None}
     except Exception: return None
 
-def process_bytes(file_name, file_bytes, data_list):
+def process_bytes(file_name, file_bytes, data_list, tenant_nit=None):
     if file_name.lower().endswith(".zip"):
         try:
             with zipfile.ZipFile(io.BytesIO(file_bytes)) as z:
                 pdf_map = {os.path.splitext(f)[0]: z.read(f) for f in z.namelist() if f.lower().endswith(".pdf")}
                 for f in z.namelist():
                     if f.lower().endswith(".xml"):
-                        parsed = parse_ubl_xml(z.read(f), pdf_map.get(os.path.splitext(f)[0]) or (list(pdf_map.values())[0] if pdf_map else None))
+                        parsed = parse_ubl_xml(z.read(f), pdf_map.get(os.path.splitext(f)[0]) or (list(pdf_map.values())[0] if pdf_map else None), tenant_nit)
                         if parsed: data_list.append(parsed)
         except Exception: pass
     elif file_name.lower().endswith(".xml"):
-        parsed = parse_ubl_xml(file_bytes)
+        parsed = parse_ubl_xml(file_bytes, tenant_nit=tenant_nit)
         if parsed: data_list.append(parsed)
+
+def extraer_facturas_desde_drive_cloud(web_app_url, data_list, tenant_nit=None):
+    try:
+        res = requests.get(web_app_url, timeout=30)
+        if res.status_code == 200:
+            archivos = res.json()
+            if not isinstance(archivos, list) or len(archivos) == 0:
+                return True, "No se encontraron archivos en la carpeta de Google Drive Nube."
+
+            for item in archivos:
+                fname = item.get("filename", "factura.zip")
+                b64_str = item.get("base64", "")
+                if b64_str:
+                    fbytes = base64.b64decode(b64_str)
+                    process_bytes(fname, fbytes, data_list, tenant_nit=tenant_nit)
+
+            return True, f"Se leyeron {len(archivos)} archivo(s) directamente desde Google Drive Nube."
+        else:
+            return False, f"Error HTTP {res.status_code} al conectar con Drive."
+    except Exception as e:
+        return False, f"Error de conexión con Google Drive: {e}"
 
 def extraer_datos_pdf_soporte(pdf_bytes, filename):
     try:
@@ -662,24 +739,57 @@ with tab1:
     with subtab_fc:
         if can_upload:
             st.markdown("##### 📤 Subir Facturas de Compra (XML / ZIP)")
-            uploaded_fc = st.file_uploader("Adjunta archivos XML o ZIP", type=["zip", "xml"], accept_multiple_files=True, key="up_fc_p1")
-            if uploaded_fc:
-                if st.button("🚀 Procesar Facturas Subidas", key="btn_proc_fc", type="primary", use_container_width=True):
-                    data_list = []
-                    for file in uploaded_fc: process_bytes(file.name, file.read(), data_list)
-                    proc_count, skipped_list = 0, []
-                    for item in data_list:
-                        doc_ref = item["Resumen"]["ID"]
-                        is_proc, razon = db_is_doc_already_processed(curr_tenant_nit, doc_ref, "FC")
-                        if not is_proc:
-                            db_save_doc(curr_tenant_nit, doc_ref, "FC", "Pendiente", item); proc_count += 1
-                        else: skipped_list.append(f"Factura FC-{doc_ref} ({item['Resumen']['Proveedor']}): {razon}")
-                    st.session_state['result_upload_fc'] = {"added": proc_count, "skipped": skipped_list}; st.rerun()
+            
+            if 'fc_up_key' not in st.session_state: st.session_state['fc_up_key'] = 0
+            
+            col_b1, col_b2 = st.columns([3, 1])
+            with col_b2:
+                if st.button("🧹 Borrar Pruebas y Limpiar", use_container_width=True):
+                    conn = get_db_connection()
+                    conn.execute("DELETE FROM docs WHERE tenant_nit=? AND tipo='FC'", (curr_tenant_nit,))
+                    conn.execute("DELETE FROM history WHERE tenant_nit=? AND tipo='FC'", (curr_tenant_nit,))
+                    conn.commit(); conn.close()
+                    st.toast("🧹 Base limpia exitosamente.", icon="✅")
+                    st.rerun()
+            
+            with col_b1:
+                uploaded_fc = st.file_uploader("Adjunta archivos XML o ZIP (También puedes seleccionar Google Drive en la barra del Finder)", type=["zip", "xml"], accept_multiple_files=True, key=f"up_fc_p1_{st.session_state['fc_up_key']}")
+            
+            c_btn1, c_btn2 = st.columns([1, 1])
+            with c_btn1:
+                btn_manual_fc = st.button("🚀 Procesar Facturas Subidas", type="primary", use_container_width=True)
+            with c_btn2:
+                btn_drive_fc = st.button("☁️ Bajar Automático Google Drive", type="secondary", use_container_width=True)
+
+            data_list = []
+            
+            if btn_manual_fc and uploaded_fc:
+                for file in uploaded_fc: process_bytes(file.name, file.read(), data_list, curr_tenant_nit=curr_tenant_nit)
+            
+            if btn_drive_fc:
+                url_api = "https://script.google.com/macros/s/AKfycbyyujzRVc6JsE--ENDSDiAMyIDNKJbDxbUirpTBXnc3KJxNI6HJfU7dJT9di97UTuzK/exec"
+                with st.spinner("Consultando Google Drive Nube..."):
+                    exito_d, msg_d = extraer_facturas_desde_drive_cloud(url_api, data_list, tenant_nit=curr_tenant_nit)
+                    if not exito_d: st.error(msg_d)
+                    else: st.info(msg_d)
+
+            if data_list:
+                proc_count, skipped_list = 0, []
+                for item in data_list:
+                    doc_ref = item["Resumen"]["ID"]
+                    is_proc, razon = db_is_doc_already_processed(curr_tenant_nit, doc_ref, "FC")
+                    if not is_proc:
+                        db_save_doc(curr_tenant_nit, doc_ref, "FC", "Pendiente", item); proc_count += 1
+                    else: skipped_list.append(f"Factura FC-{doc_ref} ({item['Resumen']['Proveedor']}): {razon}")
+                
+                st.session_state['result_upload_fc'] = {"added": proc_count, "skipped": skipped_list}
+                st.session_state['fc_up_key'] += 1
+                st.rerun()
 
             if 'result_upload_fc' in st.session_state:
                 res = st.session_state.pop('result_upload_fc')
                 if res["added"] > 0: st.success(f"✅ Se cargaron {res['added']} nuevas Facturas de Compra.")
-                if res["skipped"]: st.warning("⚠️ **Documentos NO procesados (Ya existen):**\n" + "\n".join([f"* {item}" for item in res["skipped"]]))
+                if res["skipped"]: st.warning("⚠️ **Documentos NO procesados (Ya existen o no pertenecen al NIT):**\n" + "\n".join([f"* {item}" for item in res["skipped"]]))
 
         st.markdown("---")
         fc_sub_tab1, fc_sub_tab2 = st.tabs(["⏳ FC Pendientes", "🚫 FC Rechazadas"])
@@ -688,7 +798,7 @@ with tab1:
             fc_pendientes = db_get_docs(curr_tenant_nit, "FC", "Pendiente")
             if not fc_pendientes: st.info("No hay Facturas de Compra pendientes de aprobación.")
             else:
-                for idx, f in enumerate(fc_pendientes):
+                for f in fc_pendientes:
                     r = f["Resumen"]
                     clean_nit = re.sub(r'\D', '', str(r["NIT"]))
                     esta_en_siigo = clean_nit in terceros_dict
@@ -701,25 +811,25 @@ with tab1:
                         with c5: st.markdown("**COP**")
                         with c6:
                             if can_approve:
-                                sel_cc = st.selectbox("CC", options=cc_opciones, index=cc_opciones.index(r.get("CentroCosto")) if r.get("CentroCosto") in cc_opciones else 0, key=f"fc_p1_cc_{idx}", label_visibility="collapsed")
+                                sel_cc = st.selectbox("CC", options=cc_opciones, index=cc_opciones.index(r.get("CentroCosto")) if r.get("CentroCosto") in cc_opciones else 0, key=f"fc_p1_cc_{r['ID']}", label_visibility="collapsed")
                                 r["CentroCosto"] = None if sel_cc == "-- Sin Centro de Costo (Opcional) --" else sel_cc
                         with c7:
                             if esta_en_siigo: st.markdown("<span class='badge-ok'>✅ Registrado</span>", unsafe_allow_html=True)
                             else:
                                 st.markdown("<span class='badge-warn'>🔴 No Creado</span>", unsafe_allow_html=True)
-                                if can_approve and st.button("➕ Crear en Siigo", key=f"btn_create_terc_fc_{idx}"): modal_formulario_tercero(clean_nit, r['Proveedor'], es_extranjero=False)
+                                if can_approve and st.button("➕ Crear en Siigo", key=f"btn_create_terc_fc_{r['ID']}"): modal_formulario_tercero(clean_nit, r['Proveedor'], es_extranjero=False)
                         with c8:
                             if can_approve:
                                 btn_ap, btn_rec = st.columns(2)
                                 with btn_ap:
-                                    if st.button("✅ Aprobar", key=f"btn_ap_fc_{idx}"):
+                                    if st.button("✅ Aprobar", key=f"btn_ap_fc_{r['ID']}"):
                                         r["Estado"] = "Aprobado"
                                         r["UsuarioAprobador"] = curr_user["email"]
                                         r["FechaAprobacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                         db_save_doc(curr_tenant_nit, r['ID'], "FC", "Aprobado", f)
                                         st.toast(f"✅ FC-{r['ID']} Aprobada.", icon="🎉"); st.rerun()
                                 with btn_rec:
-                                    if st.button("❌ Rechazar", key=f"btn_rec_fc_{idx}"):
+                                    if st.button("❌ Rechazar", key=f"btn_rec_fc_{r['ID']}"):
                                         r["Estado"] = "Rechazado"
                                         r["UsuarioAprobador"] = curr_user["email"]
                                         r["FechaAprobacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -729,13 +839,13 @@ with tab1:
                             d_col1, d_col2 = st.columns([3, 1])
                             with d_col1: st.dataframe(pd.DataFrame(f["Detalle"]), use_container_width=True)
                             with d_col2:
-                                if f.get("pdf_b64"): st.download_button("💾 PDF Original", data=base64.b64decode(f["pdf_b64"]), file_name=f"Original_FC_{r['ID']}.pdf", mime="application/pdf", key=f"dl_fc_pdf_{idx}")
+                                if f.get("pdf_b64"): st.download_button("💾 PDF Original", data=base64.b64decode(f["pdf_b64"]), file_name=f"Original_FC_{r['ID']}.pdf", mime="application/pdf", key=f"dl_fc_pdf_{r['ID']}")
 
         with fc_sub_tab2:
             fc_rechazadas = db_get_docs(curr_tenant_nit, "FC", "Rechazado")
             if not fc_rechazadas: st.info("No hay Facturas de Compra rechazadas.")
             else:
-                for idx, f in enumerate(fc_rechazadas):
+                for f in fc_rechazadas:
                     r = f["Resumen"]
                     with st.container(border=True):
                         c1, c2, c3, c4, c5, c6 = st.columns([1.5, 3, 1.5, 1.5, 2, 2])
@@ -747,15 +857,17 @@ with tab1:
                         with c6:
                             b_act1, b_act2 = st.columns(2)
                             with b_act1:
-                                if st.button("🔄 Re-evaluar", key=f"btn_reopen_fc_{idx}"):
+                                if st.button("🔄 Re-evaluar", key=f"btn_reopen_fc_{r['ID']}"):
                                     r["Estado"] = "Pendiente"; db_save_doc(curr_tenant_nit, r['ID'], "FC", "Pendiente", f); st.rerun()
                             with b_act2:
-                                if st.button("🗑️ Eliminar", key=f"btn_del_perm_fc_{idx}"): db_delete_doc(curr_tenant_nit, r['ID'], "FC"); st.rerun()
+                                if st.button("🗑️ Eliminar", key=f"btn_del_perm_fc_{r['ID']}"): db_delete_doc(curr_tenant_nit, r['ID'], "FC"); st.rerun()
 
     with subtab_ds:
         if can_upload:
             st.markdown("##### 📤 Subir Documentos Soporte (PDF)")
-            uploaded_ds = st.file_uploader("Adjunta archivos PDF", type=["pdf"], accept_multiple_files=True, key="up_ds_p1")
+            if 'ds_up_key' not in st.session_state: st.session_state['ds_up_key'] = 200
+            
+            uploaded_ds = st.file_uploader("Adjunta archivos PDF", type=["pdf"], accept_multiple_files=True, key=f"up_ds_p1_{st.session_state['ds_up_key']}")
             if uploaded_ds:
                 if st.button("🚀 Procesar Documentos Soporte Subidos", key="btn_proc_ds", type="primary", use_container_width=True):
                     nuevos_ds = [extraer_datos_pdf_soporte(f.read(), f.name) for f in uploaded_ds]
@@ -766,7 +878,10 @@ with tab1:
                             is_proc, razon = db_is_doc_already_processed(curr_tenant_nit, doc_ref, "DS")
                             if not is_proc: db_save_doc(curr_tenant_nit, doc_ref, "DS", "Pendiente", item); proc_count += 1
                             else: skipped_list.append(f"Doc Soporte DS-{doc_ref} ({item['proveedor']}): {razon}")
-                    st.session_state['result_upload_ds'] = {"added": proc_count, "skipped": skipped_list}; st.rerun()
+                    
+                    st.session_state['result_upload_ds'] = {"added": proc_count, "skipped": skipped_list}
+                    st.session_state['ds_up_key'] += 1
+                    st.rerun()
 
             if 'result_upload_ds' in st.session_state:
                 res = st.session_state.pop('result_upload_ds')
@@ -780,7 +895,7 @@ with tab1:
             ds_pendientes = db_get_docs(curr_tenant_nit, "DS", "Pendiente")
             if not ds_pendientes: st.info("No hay Documentos Soporte pendientes de aprobación.")
             else:
-                for idx, d in enumerate(ds_pendientes):
+                for d in ds_pendientes:
                     clean_nit = re.sub(r'\D', '', str(d["nit"]))
                     esta_en_siigo = clean_nit in terceros_dict
                     with st.container(border=True):
@@ -792,25 +907,25 @@ with tab1:
                         with c5: st.markdown(f"**{d['moneda_origen']}**")
                         with c6:
                             if can_approve:
-                                sel_cc = st.selectbox("CC", options=cc_opciones, index=cc_opciones.index(d.get("centro_costo")) if d.get("centro_costo") in cc_opciones else 0, key=f"ds_p1_cc_{idx}", label_visibility="collapsed")
+                                sel_cc = st.selectbox("CC", options=cc_opciones, index=cc_opciones.index(d.get("centro_costo")) if d.get("centro_costo") in cc_opciones else 0, key=f"ds_p1_cc_{d['documento_ref']}", label_visibility="collapsed")
                                 d["centro_costo"] = None if sel_cc == "-- Sin Centro de Costo (Opcional) --" else sel_cc
                         with c7:
                             if esta_en_siigo: st.markdown("<span class='badge-ok'>✅ Registrado</span>", unsafe_allow_html=True)
                             else:
                                 st.markdown("<span class='badge-warn'>🔴 No Creado</span>", unsafe_allow_html=True)
-                                if can_approve and st.button("➕ Crear en Siigo", key=f"btn_create_terc_ds_{idx}"): modal_formulario_tercero(clean_nit, d['proveedor'], es_extranjero=(d['moneda_origen'] == "USD"))
+                                if can_approve and st.button("➕ Crear en Siigo", key=f"btn_create_terc_ds_{d['documento_ref']}"): modal_formulario_tercero(clean_nit, d['proveedor'], es_extranjero=(d['moneda_origen'] == "USD"))
                         with c8:
                             if can_approve:
                                 btn_ap, btn_rec = st.columns(2)
                                 with btn_ap:
-                                    if st.button("✅ Aprobar", key=f"btn_ap_ds_{idx}"):
+                                    if st.button("✅ Aprobar", key=f"btn_ap_ds_{d['documento_ref']}"):
                                         d["estado"] = "Aprobado"
                                         d["UsuarioAprobador"] = curr_user["email"]
                                         d["FechaAprobacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                                         db_save_doc(curr_tenant_nit, d['documento_ref'], "DS", "Aprobado", d)
                                         st.toast(f"✅ DS-{d['documento_ref']} Aprobado.", icon="🎉"); st.rerun()
                                 with btn_rec:
-                                    if st.button("❌ Rechazar", key=f"btn_rec_ds_{idx}"):
+                                    if st.button("❌ Rechazar", key=f"btn_rec_ds_{d['documento_ref']}"):
                                         d["estado"] = "Rechazado"
                                         d["UsuarioAprobador"] = curr_user["email"]
                                         d["FechaAprobacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -821,7 +936,7 @@ with tab1:
             ds_rechazados = db_get_docs(curr_tenant_nit, "DS", "Rechazado")
             if not ds_rechazados: st.info("No hay Documentos Soporte rechazados.")
             else:
-                for idx, d in enumerate(ds_rechazados):
+                for d in ds_rechazados:
                     with st.container(border=True):
                         c1, c2, c3, c4, c5, c6 = st.columns([1.5, 3, 1.5, 1.5, 2, 2])
                         with c1: st.markdown(f"**DS-{d['documento_ref']}**")
@@ -832,10 +947,10 @@ with tab1:
                         with c6:
                             b_act1, b_act2 = st.columns(2)
                             with b_act1:
-                                if st.button("🔄 Re-evaluar", key=f"btn_reopen_ds_{idx}"):
+                                if st.button("🔄 Re-evaluar", key=f"btn_reopen_ds_{d['documento_ref']}"):
                                     d["estado"] = "Pendiente"; db_save_doc(curr_tenant_nit, d['documento_ref'], "DS", "Pendiente", d); st.rerun()
                             with b_act2:
-                                if st.button("🗑️ Eliminar", key=f"btn_del_perm_ds_{idx}"): db_delete_doc(curr_tenant_nit, d['documento_ref'], "DS"); st.rerun()
+                                if st.button("🗑️ Eliminar", key=f"btn_del_perm_ds_{d['documento_ref']}"): db_delete_doc(curr_tenant_nit, d['documento_ref'], "DS"); st.rerun()
 
 # ==========================================
 # PESTAÑA 2: CAUSACIÓN FACTURA DE COMPRA (FC)
@@ -854,7 +969,7 @@ with tab2:
             list_iva, list_rete, list_reteiva, list_ica = maestros.get("impuestos_iva", []), maestros.get("impuestos_rete", []), maestros.get("impuestos_reteiva", []), maestros.get("impuestos_ica", [])
             engine = PredictiveEngine(maestros)
 
-            for idx, doc in enumerate(fc_aprobadas):
+            for doc in fc_aprobadas:
                 r = doc["Resumen"]
                 llave_factura = f"{r['NIT']}_{r['ID']}"
                 with st.container(border=True):
@@ -862,25 +977,25 @@ with tab2:
                     with c_head1:
                         with st.expander(f"👁️ Ver Detalle de Factura {r['ID']} ({r['Proveedor']})", expanded=False): st.dataframe(pd.DataFrame(doc["Detalle"]), use_container_width=True)
                     with c_head2:
-                        if doc.get("pdf_b64"): st.download_button("💾 PDF Factura", data=base64.b64decode(doc["pdf_b64"]), file_name=f"Factura_{r['ID']}.pdf", mime="application/pdf", key=f"dl_fac_pdf_{idx}")
+                        if doc.get("pdf_b64"): st.download_button("💾 PDF Factura", data=base64.b64decode(doc["pdf_b64"]), file_name=f"Factura_{r['ID']}.pdf", mime="application/pdf", key=f"dl_fac_pdf_{llave_factura}")
                     
                     e1, e2, e3, e4 = st.columns([2, 1.8, 1.8, 1.5])
                     with e1:
-                        dt_sel = st.selectbox("Tipo", options=[t["nombre"] for t in types_fc], key=f"fc_dt_{idx}")
+                        dt_sel = st.selectbox("Tipo", options=[t["nombre"] for t in types_fc], key=f"fc_dt_{llave_factura}")
                         id_type_fc = next((t["id"] for t in types_fc if t["nombre"] == dt_sel), 19147)
                         idx_terc_def = buscar_indice_tercero(r["Proveedor"], r["NIT"], terceros_lista)
                         opciones_terc = terceros_lista.copy()
                         if idx_terc_def < 0:
                             opciones_terc.insert(0, f"⚠️ TERCERO NO CREADO EN SIIGO ({r['NIT']} - {r['Proveedor']})")
-                            tercero_sel = st.selectbox("Proveedores", options=opciones_terc, index=0, key=f"fc_terc_{idx}")
-                        else: tercero_sel = st.selectbox("Proveedores", options=opciones_terc, index=idx_terc_def, key=f"fc_terc_{idx}")
+                            tercero_sel = st.selectbox("Proveedores", options=opciones_terc, index=0, key=f"fc_terc_{llave_factura}")
+                        else: tercero_sel = st.selectbox("Proveedores", options=opciones_terc, index=idx_terc_def, key=f"fc_terc_{llave_factura}")
                         nit_ingresado = tercero_sel.split(" - ")[0].strip() if "⚠️" not in tercero_sel else r["NIT"]
                     with e2:
-                        fecha_fac = st.text_input("Fecha", value=r["Fecha"], key=f"fc_fec_{idx}")
-                        num_fac = st.text_input("No. Factura", value=re.sub(r'\D', '', str(r['ID'])), key=f"fc_num_{idx}")
+                        fecha_fac = st.text_input("Fecha", value=r["Fecha"], key=f"fc_fec_{llave_factura}")
+                        num_fac = st.text_input("No. Factura", value=re.sub(r'\D', '', str(r['ID'])), key=f"fc_num_{llave_factura}")
                     with e3:
                         cc_opts = ["-- Sin Centro de Costo --"] + [c["nombre"] for c in cc_lista]
-                        cc_header_sel = st.selectbox("Centro de costo", options=cc_opts, index=cc_opts.index(r.get("CentroCosto")) if r.get("CentroCosto") in cc_opts else 0, key=f"fc_cc_head_{idx}")
+                        cc_header_sel = st.selectbox("Centro de costo", options=cc_opts, index=cc_opts.index(r.get("CentroCosto")) if r.get("CentroCosto") in cc_opts else 0, key=f"fc_cc_head_{llave_factura}")
                         id_cc_head = next((c["id"] for c in cc_lista if c["nombre"] == cc_header_sel), None) if cc_header_sel != "-- Sin Centro de Costo --" else None
                     with e4: st.metric("Total Neto XML", f"${r['Total']:,.0f}")
 
@@ -921,31 +1036,46 @@ with tab2:
                         acum_subtotal += sub_row; acum_iva += iva_row
                         items_siigo.append({"code": code_item, "type": tipo_item, "description": desc_val, "quantity": cant_val, "price": monto_val, "cost_center": id_cc_head, "id_iva": id_iva, "id_rete": id_rete})
 
-                    if st.button("➕ Agregar Línea Adicional", key=f"btn_add_line_fc_{idx}"):
+                    if st.button("➕ Agregar Línea Adicional", key=f"btn_add_line_fc_{llave_factura}"):
                         doc["Detalle"].append({"Concepto": "Línea Adicional", "Cantidad": 1.0, "Subtotal": 0.0, "IVA %": 0.0, "Valor IVA": 0.0}); db_save_doc(curr_tenant_nit, r['ID'], "FC", "Aprobado", doc); st.rerun()
 
                     st.markdown("---")
                     b1, b2, b3 = st.columns([2, 1.8, 1.8])
                     with b1:
-                        pago_sel = st.selectbox("Forma de pago", options=[p["nombre"] for p in pagos_lista], key=f"fc_pago_{idx}")
+                        pago_sel = st.selectbox("Forma de pago", options=[p["nombre"] for p in pagos_lista], key=f"fc_pago_{llave_factura}")
                         id_pago = next((p["id"] for p in pagos_lista if p["nombre"] == pago_sel), 1)
                     with b2:
-                        sel_reteiva = st.selectbox("ReteIVA (Pie)", options=[i["nombre"] for i in list_reteiva], key=f"fc_glob_reteiva_{idx}")
+                        sel_reteiva = st.selectbox("ReteIVA (Pie)", options=[i["nombre"] for i in list_reteiva], key=f"fc_glob_reteiva_{llave_factura}")
                         id_reteiva = next((i["id"] for i in list_reteiva if i["nombre"] == sel_reteiva), 0)
                     with b3:
-                        sel_reteica = st.selectbox("ReteICA (Pie)", options=[i["nombre"] for i in list_ica], key=f"fc_glob_reteica_{idx}")
+                        sel_reteica = st.selectbox("ReteICA (Pie)", options=[i["nombre"] for i in list_ica], key=f"fc_glob_reteica_{llave_factura}")
                         id_reteica = next((i["id"] for i in list_ica if i["nombre"] == sel_reteica), 0)
 
                     total_neto_calculado = acum_subtotal + acum_iva
                     st.markdown(f"### **Total Neto: ${total_neto_calculado:,.2f} COP**")
 
-                    if st.button(f"🚀 Guardar y Enviar Factura FC en Siigo", key=f"btn_fc_{idx}", type="primary"):
+                    if st.button(f"🚀 Guardar y Enviar Factura FC en Siigo", key=f"btn_fc_{llave_factura}", type="primary"):
                         if "⚠️" in tercero_sel: st.error("🔴 Selecciona un tercero válido.")
                         else:
                             num_fac_clean = re.sub(r'\D', '', str(num_fac)) or "1"
                             valid_items = [it for it in items_siigo if it["price"] > 0 or len(items_siigo) == 1]
 
                             final_items_payload = []
+                            val_retenciones_calc = 0.0
+                            
+                            for r_it in valid_items:
+                                sub_lin = r_it["quantity"] * r_it["price"]
+                                if r_it["id_rete"] and int(r_it["id_rete"]) > 0:
+                                    pct_rete = next((float(i["porcentaje"]) for i in list_rete if i["id"] == int(r_it["id_rete"])), 0)
+                                    val_retenciones_calc += sub_lin * (pct_rete/100.0)
+
+                            if id_reteiva and int(id_reteiva) > 0:
+                                pct_rete = next((float(i["porcentaje"]) for i in list_reteiva if i["id"] == int(id_reteiva)), 0)
+                                val_retenciones_calc += acum_iva * (pct_rete/100.0)
+                            if id_reteica and int(id_reteica) > 0:
+                                pct_rete = next((float(i["porcentaje"]) for i in list_ica if i["id"] == int(id_reteica)), 0)
+                                val_retenciones_calc += acum_subtotal * (pct_rete/100.0)
+
                             for it in valid_items:
                                 taxes_list = []
                                 if it["id_iva"] and int(it["id_iva"]) > 0: taxes_list.append({"id": int(it["id_iva"])})
@@ -958,19 +1088,24 @@ with tab2:
                             if id_reteiva and int(id_reteiva) > 0: retentions_payload.append({"id": int(id_reteiva)})
                             if id_reteica and int(id_reteica) > 0: retentions_payload.append({"id": int(id_reteica)})
 
+                            total_pagar_final = total_neto_calculado - val_retenciones_calc
+
                             payload_fc = {
                                 "document": {"id": id_type_fc}, "date": fecha_fac, "supplier": {"identification": nit_ingresado, "branch_office": 0},
                                 "retentions": retentions_payload, "observations": f"Causación AutoCount.ai - Doc {num_fac_clean}",
-                                "items": final_items_payload, "payments": [{"id": id_pago, "value": round(total_neto_calculado, 2), "due_date": fecha_fac}],
+                                "items": final_items_payload, "payments": [{"id": id_pago, "value": round(total_pagar_final, 2), "due_date": fecha_fac}],
                                 "provider_invoice": {"prefix": "FC", "number": int(str(num_fac_clean)[:9])}
                             }
                             if id_cc_head: payload_fc["cost_center"] = id_cc_head
 
-                            exito, msg, doc_id_siigo, doc_num_siigo = causar_en_siigo_api(payload_fc, is_ds=False)
+                            exito, msg, doc_id_siigo, doc_num_siigo, real_total_pagar = causar_en_siigo_api(payload_fc, is_ds=False)
                             if exito:
                                 siigo_ref_completa = f"{doc_num_siigo}|||{doc_id_siigo}"
+                                actual_retentions = round(total_neto_calculado - real_total_pagar, 2)
                                 doc["Resumen"]["Subtotal"] = acum_subtotal
                                 doc["Resumen"]["IVA"] = acum_iva
+                                doc["Resumen"]["Retenciones"] = actual_retentions
+                                doc["Resumen"]["TotalPagar"] = real_total_pagar
                                 doc["Resumen"]["Total"] = total_neto_calculado
                                 doc["UsuarioCausador"] = curr_user["email"]
                                 doc["FechaCausacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -994,32 +1129,32 @@ with tab3:
             list_iva, list_rete, list_reteiva, list_ica = maestros.get("impuestos_iva", []), maestros.get("impuestos_rete", []), maestros.get("impuestos_reteiva", []), maestros.get("impuestos_ica", [])
             engine = PredictiveEngine(maestros)
 
-            for idx, ds in enumerate(ds_aprobados):
+            for ds in ds_aprobados:
                 llave_ds = f"DS_{ds['documento_ref']}"
                 with st.container(border=True):
                     f1, f2, f3, f4 = st.columns([2, 1.8, 1.8, 1.5])
                     with f1:
-                        dt_sel = st.selectbox("Tipo DS Siigo", options=[t["nombre"] for t in types_ds], key=f"ds_dt_{idx}")
+                        dt_sel = st.selectbox("Tipo DS Siigo", options=[t["nombre"] for t in types_ds], key=f"ds_dt_{llave_ds}")
                         id_type_ds = next((t["id"] for t in types_ds if t["nombre"] == dt_sel), 25872)
                         idx_terc_def = buscar_indice_tercero(ds['proveedor'], ds['nit'], terceros_lista)
                         opciones_terc = terceros_lista.copy()
                         if idx_terc_def < 0:
                             opciones_terc.insert(0, f"⚠️ TERCERO NO CREADO EN SIIGO ({ds['nit']} - {ds['proveedor']})")
-                            tercero_sel = st.selectbox("Proveedores", options=opciones_terc, index=0, key=f"ds_terc_{idx}")
-                        else: tercero_sel = st.selectbox("Proveedores", options=opciones_terc, index=idx_terc_def, key=f"ds_terc_{idx}")
+                            tercero_sel = st.selectbox("Proveedores", options=opciones_terc, index=0, key=f"ds_terc_{llave_ds}")
+                        else: tercero_sel = st.selectbox("Proveedores", options=opciones_terc, index=idx_terc_def, key=f"ds_terc_{llave_ds}")
                         if "⚠️" not in tercero_sel: nit_ingresado, prov_nombre = tercero_sel.split(" - ")[0].strip(), tercero_sel.split(" - ", 1)[1].strip()
                         else: nit_ingresado, prov_nombre = ds['nit'], ds['proveedor']
                     with f2:
-                        fecha_ds = st.text_input("Fecha", value=ds['fecha'], key=f"ds_fec_{idx}")
-                        doc_ref = st.text_input("No. Comprobante", value=re.sub(r'\D', '', str(ds['documento_ref'])), key=f"ds_ref_{idx}")
+                        fecha_ds = st.text_input("Fecha", value=ds['fecha'], key=f"ds_fec_{llave_ds}")
+                        doc_ref = st.text_input("No. Comprobante", value=re.sub(r'\D', '', str(ds['documento_ref'])), key=f"ds_ref_{llave_ds}")
                     with f3:
                         cc_opts_ds = ["-- Sin Centro de Costo --"] + [c["nombre"] for c in cc_lista]
-                        cc_header_sel = st.selectbox("Centro Costo", options=cc_opts_ds, index=cc_opts_ds.index(ds.get("centro_costo")) if ds.get("centro_costo") in cc_opts_ds else 0, key=f"ds_cc_head_{idx}")
+                        cc_header_sel = st.selectbox("Centro Costo", options=cc_opts_ds, index=cc_opts_ds.index(ds.get("centro_costo")) if ds.get("centro_costo") in cc_opts_ds else 0, key=f"ds_cc_head_{llave_ds}")
                         id_cc_head = next((c["id"] for c in cc_lista if c["nombre"] == cc_header_sel), None) if cc_header_sel != "-- Sin Centro de Costo --" else None
-                        moneda_sel = st.selectbox("Moneda", options=["USD", "COP"], index=0 if ds['moneda_origen']=="USD" else 1, key=f"ds_mon_{idx}")
+                        moneda_sel = st.selectbox("Moneda", options=["USD", "COP"], index=0 if ds['moneda_origen']=="USD" else 1, key=f"ds_mon_{llave_ds}")
                     with f4:
-                        monto_orig = st.number_input("Monto Origen", value=float(ds['monto_origen']), key=f"ds_monto_{idx}")
-                        trm_val = st.number_input("TRM", value=float(ds['trm']), key=f"ds_trm_{idx}") if moneda_sel=="USD" else 1.0
+                        monto_orig = st.number_input("Monto Origen", value=float(ds['monto_origen']), key=f"ds_monto_{llave_ds}")
+                        trm_val = st.number_input("TRM", value=float(ds['trm']), key=f"ds_trm_{llave_ds}") if moneda_sel=="USD" else 1.0
                         if moneda_sel == "USD": st.caption(f"💵 **Base COP (TRM):** ${round(monto_orig * trm_val, 2):,.2f}")
 
                     st.markdown("<div class='siigo-table-header'># | Tipo | Código / Producto | Descripción | Cant | Vr. Unitario | Imp. Cargo (IVA) | Imp. Retención | Valor Total | Acciones</div>", unsafe_allow_html=True)
@@ -1059,30 +1194,45 @@ with tab3:
                         acum_subtotal_ds += sub_row; acum_iva_ds += iva_row
                         items_ds_siigo.append({"code": code_item, "type": tipo_item, "description": desc_val, "quantity": cant_val, "price": monto_val, "cost_center": id_cc_head, "id_iva": id_iva, "id_rete": id_rete, "pct_iva": pct_iva_sel})
 
-                    if st.button("➕ Agregar Línea Adicional", key=f"btn_add_line_ds_{idx}"):
+                    if st.button("➕ Agregar Línea Adicional", key=f"btn_add_line_ds_{llave_ds}"):
                         ds["items_custom"].append({"type": "Account", "code": "51355001", "description": "Línea Adicional Exterior", "quantity": 1.0, "price": 0.0, "id_iva": 0, "id_rete": 0})
                         db_save_doc(curr_tenant_nit, ds['documento_ref'], "DS", "Aprobado", ds); st.rerun()
 
                     st.markdown("---")
                     b1, b2, b3 = st.columns([2, 1.8, 1.8])
                     with b1:
-                        pago_sel = st.selectbox("Forma de pago", options=[p["nombre"] for p in maestros.get("pagos", [{"id": 1, "nombre": "Efectivo / Crédito (ID: 1)"}])], key=f"ds_pago_{idx}")
+                        pago_sel = st.selectbox("Forma de pago", options=[p["nombre"] for p in maestros.get("pagos", [{"id": 1, "nombre": "Efectivo / Crédito (ID: 1)"}])], key=f"ds_pago_{llave_ds}")
                         id_pago = next((p["id"] for p in maestros.get("pagos", []) if p["nombre"] == pago_sel), 1)
                     with b2:
-                        sel_reteiva_ds = st.selectbox("ReteIVA (Pie)", options=[i["nombre"] for i in list_reteiva], key=f"ds_glob_reteiva_{idx}")
+                        sel_reteiva_ds = st.selectbox("ReteIVA (Pie)", options=[i["nombre"] for i in list_reteiva], key=f"ds_glob_reteiva_{llave_ds}")
                         id_reteiva_ds = next((i["id"] for i in list_reteiva if i["nombre"] == sel_reteiva_ds), 0)
                     with b3:
-                        sel_reteica_ds = st.selectbox("ReteICA (Pie)", options=[i["nombre"] for i in list_ica], key=f"ds_glob_reteica_{idx}")
+                        sel_reteica_ds = st.selectbox("ReteICA (Pie)", options=[i["nombre"] for i in list_ica], key=f"ds_glob_reteica_{llave_ds}")
                         id_reteica_ds = next((i["id"] for i in list_ica if i["nombre"] == sel_reteica_ds), 0)
 
                     total_enviar_ds = acum_subtotal_ds + acum_iva_ds
                     st.markdown(f"### **Total Neto: {'$' if moneda_sel=='COP' else 'USD $'}{total_enviar_ds:,.2f} {moneda_sel}**")
 
-                    if st.button("🚀 Transmitir Documento Soporte a Siigo", key=f"btn_ds_send_{idx}", type="primary"):
+                    if st.button("🚀 Transmitir Documento Soporte a Siigo", key=f"btn_ds_send_{llave_ds}", type="primary"):
                         if "⚠️" in tercero_sel: st.error("🔴 Selecciona un tercero válido.")
                         else:
                             num_ref_clean = re.sub(r'\D', '', doc_ref) or "101"
                             valid_items_ds = [it for it in items_ds_siigo if it["price"] > 0 or len(items_ds_siigo) == 1]
+                            
+                            val_retenciones_calc_ds = 0.0
+                            for r_it in valid_items_ds:
+                                sub_lin = r_it["quantity"] * r_it["price"]
+                                if r_it["id_rete"] and int(r_it["id_rete"]) > 0:
+                                    pct_rete = next((float(i["porcentaje"]) for i in list_rete if i["id"] == int(r_it["id_rete"])), 0)
+                                    val_retenciones_calc_ds += sub_lin * (pct_rete/100.0)
+
+                            if id_reteiva_ds and int(id_reteiva_ds) > 0:
+                                pct_rete = next((float(i["porcentaje"]) for i in list_reteiva if i["id"] == int(id_reteiva_ds)), 0)
+                                val_retenciones_calc_ds += acum_iva_ds * (pct_rete/100.0)
+                            if id_reteica_ds and int(id_reteica_ds) > 0:
+                                pct_rete = next((float(i["porcentaje"]) for i in list_ica if i["id"] == int(id_reteica_ds)), 0)
+                                val_retenciones_calc_ds += acum_subtotal_ds * (pct_rete/100.0)
+
                             final_items_payload_ds = []
                             for it in valid_items_ds:
                                 taxes_list = []
@@ -1096,20 +1246,25 @@ with tab3:
                             if id_reteiva_ds and int(id_reteiva_ds) > 0: retentions_payload_ds.append({"id": int(id_reteiva_ds)})
                             if id_reteica_ds and int(id_reteica_ds) > 0: retentions_payload_ds.append({"id": int(id_reteica_ds)})
 
+                            total_pagar_final_ds = total_enviar_ds - val_retenciones_calc_ds
+
                             payload_ds = {
                                 "document": {"id": id_type_ds}, "date": fecha_ds, "supplier": {"identification": nit_ingresado, "branch_office": 0},
                                 "retentions": retentions_payload_ds, "observations": f"Documento Soporte (Ref: {num_ref_clean})",
-                                "items": final_items_payload_ds, "payments": [{"id": id_pago, "value": round(total_enviar_ds, 2), "due_date": fecha_ds}],
+                                "items": final_items_payload_ds, "payments": [{"id": id_pago, "value": round(total_pagar_final_ds, 2), "due_date": fecha_ds}],
                                 "supplier_receipt_number": {"prefix": "DS", "number": int(num_ref_clean[-10:])}, "electronic_type": "Electronic", "is_electronic": True
                             }
                             if id_cc_head: payload_ds["cost_center"] = id_cc_head
                             if moneda_sel == "USD": payload_ds["currency"] = {"code": "USD", "exchange_rate": float(trm_val)}
 
-                            exito, msg, doc_id_siigo, doc_num_siigo = causar_en_siigo_api(payload_ds, is_ds=True)
+                            exito, msg, doc_id_siigo, doc_num_siigo, real_total_pagar = causar_en_siigo_api(payload_ds, is_ds=True)
                             if exito:
                                 siigo_ref_completa = f"{doc_num_siigo}|||{doc_id_siigo}"
+                                actual_retentions = round(total_enviar_ds - real_total_pagar, 2)
                                 ds["subtotal"] = acum_subtotal_ds
                                 ds["iva"] = acum_iva_ds
+                                ds["retenciones"] = actual_retentions
+                                ds["TotalPagar"] = real_total_pagar
                                 ds["total"] = total_enviar_ds
                                 ds["UsuarioCausador"] = curr_user["email"]
                                 ds["FechaCausacion"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1150,7 +1305,7 @@ with tab4:
 # ==========================================
 with tab_rep:
     st.subheader("📈 Reportes y Exportaciones a Excel")
-    st.caption("Descarga informes detallados con desglose de Subtotal, IVA y Total por ítem.")
+    st.caption("Descarga informes detallados con desglose exacto de información para contabilidad.")
 
     col_rep1, col_rep2 = st.columns(2)
     
@@ -1164,18 +1319,16 @@ with tab_rep:
             for d in docs_aprobados:
                 v = extraer_valores_reporte(d)
                 filas_aprob.append({
-                    "Tipo": v["tipo"],
-                    "No. Documento": v["doc_ref"],
-                    "Fecha Emisión": v["fecha"],
+                    "Fecha de Recibido": v["fecha_recibido"],
+                    "Fecha Vencimiento": v["fecha_vencimiento"],
                     "NIT": v["nit"],
                     "Proveedor": v["proveedor"],
-                    "Conceptos": v["conceptos"],
-                    "Moneda": v["moneda"],
-                    "Subtotal": v["subtotal"],
-                    "IVA": v["iva"],
-                    "Total": v["total"],
-                    "Aprobado Por": v["aprobador"],
-                    "Fecha Aprobación": v["fecha_aprobacion"]
+                    "Número de Factura": v["doc_ref"],
+                    "Concepto": v["conceptos"],
+                    "Centro de Costo": v["centro_costo"],
+                    "Valor con IVA": v["valor_con_iva"],
+                    "Retenciones": v["retenciones"],
+                    "Valor a Pagar": v["valor_a_pagar"]
                 })
             
             df_aprob = pd.DataFrame(filas_aprob)
@@ -1192,25 +1345,22 @@ with tab_rep:
             for h in historial:
                 data_j = json.loads(h.get("data_json") or "{}")
                 v = extraer_valores_reporte(data_j, h_total=h["total"]) if data_j else {
-                    "tipo": h["tipo"], "doc_ref": h["id_doc_prov"], "fecha": h["fecha"], "nit": h["nit"],
-                    "proveedor": h["proveedor"], "conceptos": f"Causación {h['tipo']}", "moneda": h["moneda"],
-                    "subtotal": h["total"], "iva": 0.0, "total": h["total"], "causador": h["usuario"] or "N/A", "fecha_causacion": h["fecha"]
+                    "fecha_recibido": h["fecha"], "fecha_vencimiento": h["fecha"], "nit": h["nit"],
+                    "proveedor": h["proveedor"], "doc_ref": h["id_doc_prov"], "conceptos": f"Causación {h['tipo']}",
+                    "centro_costo": "-- Sin Centro de Costo --", "valor_con_iva": h["total"], "retenciones": 0.0, "valor_a_pagar": h["total"]
                 }
                 
                 filas_caus.append({
-                    "Tipo": v["tipo"],
-                    "Ref. Proveedor": v["doc_ref"],
-                    "ID Comprobante Siigo": h["id_siigo_num"].split("|||")[0] if "|||" in h["id_siigo_num"] else h["id_siigo_num"],
-                    "Fecha": v["fecha"],
+                    "Fecha de Recibido": v["fecha_recibido"],
+                    "Fecha Vencimiento": v["fecha_vencimiento"],
                     "NIT": v["nit"],
                     "Proveedor": v["proveedor"],
-                    "Conceptos": v["conceptos"],
-                    "Moneda": v["moneda"],
-                    "Subtotal": v["subtotal"],
-                    "IVA": v["iva"],
-                    "Total": v["total"],
-                    "Causado Por": h["usuario"] or v["causador"],
-                    "Fecha Causación": v["fecha_causacion"]
+                    "Número de Factura": v["doc_ref"],
+                    "Concepto": v["conceptos"],
+                    "Centro de Costo": v["centro_costo"],
+                    "Valor con IVA": v["valor_con_iva"],
+                    "Retenciones": v["retenciones"],
+                    "Valor a Pagar": v["valor_a_pagar"]
                 })
             
             df_caus = pd.DataFrame(filas_caus)
