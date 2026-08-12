@@ -1,5 +1,6 @@
-streamlit
+sstreamlit
 pandas
 requests
 pypdf
 openpyxl
+fpdf
