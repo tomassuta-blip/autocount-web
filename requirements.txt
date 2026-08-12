@@ -1,6 +1,6 @@
-sstreamlit
+streamlit
 pandas
 requests
 pypdf
 openpyxl
-fpdf
+fpdf2
